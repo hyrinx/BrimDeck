@@ -183,36 +183,47 @@ internal static class WeatherData
         {
             double? lat = Json.Number(item, "lat"), lon = Json.Number(item, "lon");
             if (Json.Text(item, "name") is not { Length: > 0 } name || lat is null || lon is null) continue;
+            // 和风返回的大陆坐标是 GCJ-02（官方词汇表），入库前还原成 WGS-84：程序内只存一套真实坐标，
+            // 发给和风时再由请求层加密一次，两边各转一次互相抵消。
+            var (wgsLat, wgsLon) = Geo.ToWgs84(lat.Value, lon.Value);
             cities.Add(new City(
                 City.Compose(name, Json.Text(item, "adm2"), Json.Text(item, "adm1"), Json.Text(item, "country")),
-                lat.Value, lon.Value, Json.Text(item, "id") ?? "") { TimeZoneId = Json.Text(item, "tz") });
+                wgsLat, wgsLon, Json.Text(item, "id") ?? "") { TimeZoneId = Json.Text(item, "tz") });
         }
         return cities;
     }
     // 自动定位，精度分层，不冒充：
-    // 1) Windows 系统定位（WiFi/网络，数百米级）→ 和风反查到区县，「洪山区 · 武汉市 · 湖北省」才真正可信；
-    // 2) IP 定位（城市级精度，坐标常是数据库里的城市中心点——武汉的中心点恰好落在江汉区，
-    //    反查到区县只会给出错的位置）→ 反查结果只取城市与省两级，诚实显示「武汉市 · 湖北省」；
-    // 3) 无和风 Key：退回按 IP 城市名搜索或直接用 IP 返回的地名拼装。
+    // 1) Windows 系统定位（GPS/WiFi，十米到数百米级）→ 和风反查到区县，「洪山区 · 武汉市 · 湖北省」才真正可信；
+    // 2) 系统只给出 IP 级结果（来源是 IP 或误差 > 2 km）→ 反查只取城市与省两级；
+    // 3) 拿不到系统坐标：才退回 IP 定位（城市级），名字和坐标都来自 IP。
+    // 系统定位与是否配置和风无关：没 Key 时坐标照样要拿，只是名字只能靠 IP 或 Open-Meteo 补。
     internal static async Task<City?> LocateAsync(WeatherSettings settings, CancellationToken token)
     {
         bool hefeng=WeatherSecrets.Key.Length>0&&settings.HeFengHost.Trim().Length>0;
-        // 阶段一（Windows 定位 → 和风反查区县）与阶段二（IP 定位）分开 try/catch：
-        // 反查抛异常时不清空已取得的系统坐标，流程落到 IP 阶段继续——只丢「区县级」精度，不丢定位本身。
-        (double Lat,double Lon)? precise=null;
-        try {
-            if(hefeng)precise=await WindowsLocation.PositionAsync(token);
-            if(precise is { } coords)
+        WindowsLocation.Fix? fix=null;
+        try { fix=await WindowsLocation.PositionAsync(token); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+        catch { }
+        // 反查失败不清空已取得的系统坐标：只丢「区县级」精度，不丢定位本身，流程落到 IP 阶段继续。
+        if(hefeng&&fix is { } located)
+        {
+            try
             {
-                try
+                // 和风要求大陆坐标用 GCJ-02（官方词汇表）；City 里存的是系统给的 WGS-84，
+                // 这次查询按加密后的坐标提问，贴边界的点才不会落到隔壁区。
+                var (queryLat,queryLon)=Geo.ToGcj02(located.Latitude,located.Longitude);
+                var found=await SearchHeFeng(FormattableString.Invariant($"{queryLon:0.###},{queryLat:0.###}"),settings,token);
+                if(found.Count>0)
                 {
-                    var found=await SearchHeFeng(FormattableString.Invariant($"{coords.Lon:0.###},{coords.Lat:0.###}"),settings,token);
-                    if(found.Count>0)return found[0];
+                    // 反查返回的是行政区中心点：只借名称/ID/时区，坐标用系统定位值；
+                    // 精度不够时按城市级显示，超不出城市范围的区县名不摆出来。
+                    string name=located.District?found[0].Name:City.WithoutDistrict(found[0].Name);
+                    return found[0] with { Name=name, Latitude=located.Latitude, Longitude=located.Longitude };
                 }
-                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-                catch { }
             }
-        } catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; } catch { }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch { }
+        }
         try {
             using var doc=JsonDocument.Parse(await Http.GetStringAsync("https://ipwho.is/?lang="+(Loc.IsEnglish?"en":"zh-CN"),token));
             var root=doc.RootElement;
@@ -221,10 +232,13 @@ internal static class WeatherData
             double lat=la.GetDouble(),lon=lo.GetDouble();
             // 系统坐标在手（反查失败落下来的）不再对 IP 坐标做反查：坐标已是数百米级，
             // 只需要 IP 补城市名；返回时坐标仍用系统定位的精确值。
-            if(hefeng&&precise is null)
+            if(hefeng&&fix is null)
             {
                 List<City> found;
-                try { found=await SearchHeFeng(FormattableString.Invariant($"{lon:0.###},{lat:0.###}"),settings,token); }
+                try {
+                    var (queryLat,queryLon)=Geo.ToGcj02(lat,lon);
+                    found=await SearchHeFeng(FormattableString.Invariant($"{queryLon:0.###},{queryLat:0.###}"),settings,token);
+                }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                 catch { found=[]; }
                 if(found.Count>0)
@@ -241,8 +255,16 @@ internal static class WeatherData
                 if(found.Count>0)
                 {
                     var best=found.OrderBy(c=>Math.Abs(c.Latitude-lat)+Math.Abs(c.Longitude-lon)).First();
-                    // 有系统坐标时搜索只用来拿规范的名称与 LocationId，坐标以系统定位为准。
-                    return precise is { } position ? best with { Latitude = position.Lat, Longitude = position.Lon, TimeZoneId = null } : best;
+                    if(fix is { } at)
+                    {
+                        // IP 城市名离系统坐标三百公里以上，说明 IP 落在运营商出口（跨城 NAT / 代理）：
+                        // 名称按不可信处理，显示「当前位置」。
+                        if(Geo.DistanceKm(at.Latitude,at.Longitude,best.Latitude,best.Longitude)>300)
+                            return new City("当前位置",at.Latitude,at.Longitude) { CountryCode = Json.Text(root, "country_code") };
+                        // 有系统坐标时搜索只用来拿规范的名称与 LocationId，坐标以系统定位为准。
+                        return best with { Latitude = at.Latitude, Longitude = at.Longitude, TimeZoneId = null };
+                    }
+                    return best;
                 }
             }
             var parts=new List<string>();
@@ -251,10 +273,10 @@ internal static class WeatherData
             if(root.TryGetProperty("country",out var country)&&country.ValueKind==JsonValueKind.String&&country.GetString() is {Length:>0} c&&!parts.Contains(c))parts.Add(c);
             // 精确坐标在手时同样不信任 IP 时区（原因同上）：清空让聚合层按坐标自行确定；
             // 没有精确坐标时坐标与时区同属 IP 返回，保留。
-            return new City(parts.Count>0?City.Compose([.. parts]):"当前位置",precise?.Lat ?? lat,precise?.Lon ?? lon)
+            return new City(parts.Count>0?City.Compose([.. parts]):"当前位置",fix?.Latitude ?? lat,fix?.Longitude ?? lon)
             {
                 CountryCode = Json.Text(root, "country_code"),
-                TimeZoneId = (precise is null && Json.Get(root, "timezone") is { } tz) ? Json.Text(tz, "id") : null
+                TimeZoneId = (fix is null && Json.Get(root, "timezone") is { } tz) ? Json.Text(tz, "id") : null
             };
         } catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; } catch { return null; }
     }

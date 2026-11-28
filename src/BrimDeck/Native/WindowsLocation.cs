@@ -7,10 +7,19 @@ namespace BrimDeck;
 // 系统未开「定位服务」或权限被拒时返回 null，调用方退回 IP 定位——那里只敢声称城市级。
 internal static class WindowsLocation
 {
+    // 定位结果连同来源与误差一起给出：只有坐标而没有误差，就没法判断这次该不该声称「到区县」。
+    // AccuracyMeters 是系统给的误差半径（米），未知时为 NaN。
+    internal readonly record struct Fix(double Latitude, double Longitude, double AccuracyMeters, PositionSource Source)
+    {
+        // 只有 GPS / WiFi（含基站）且误差在 2 km 内，才值得拿去反查区县；IP 级结果本质是城市级。
+        internal bool District => AccuracyMeters is > 0 and <= 2000
+            && Source is PositionSource.Satellite or PositionSource.WiFi or PositionSource.Cellular;
+    }
+
     private static readonly object Lock = new();
-    private static (DateTime At, double Lat, double Lon)? _last;
+    private static (DateTime At, Fix Value)? _last;
     // 同一位置几分钟内复用：天气自动刷新与设置页打开都会查定位，不必每次等一轮 WiFi 定位。
-    public static async Task<(double Lat, double Lon)?> PositionAsync(CancellationToken token)
+    public static async Task<Fix?> PositionAsync(CancellationToken token)
     {
         bool cached;
         lock (Lock) cached = _last is { } kept && DateTime.UtcNow - kept.At < TimeSpan.FromMinutes(5);
@@ -20,7 +29,7 @@ internal static class WindowsLocation
         {
             lock (Lock)
             {
-                if (_last is { } kept && DateTime.UtcNow - kept.At < TimeSpan.FromMinutes(5)) return (kept.Lat, kept.Lon);
+                if (_last is { } kept && DateTime.UtcNow - kept.At < TimeSpan.FromMinutes(5)) return kept.Value;
             }
         }
         try
@@ -50,7 +59,7 @@ internal static class WindowsLocation
         catch { return false; }
     }
 
-    private static async Task<(double Lat, double Lon)?> ReadAsync(CancellationToken token)
+    private static async Task<Fix?> ReadAsync(CancellationToken token)
     {
         try
         {
@@ -60,9 +69,11 @@ internal static class WindowsLocation
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(token);
             cts.CancelAfter(TimeSpan.FromSeconds(12));
             var position = await locator.GetGeopositionAsync(TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(10)).AsTask(cts.Token);
-            var point = position.Coordinate.Point.Position;
-            lock (Lock) _last = (DateTime.UtcNow, point.Latitude, point.Longitude);
-            return (point.Latitude, point.Longitude);
+            var coordinate = position.Coordinate;
+            var point = coordinate.Point.Position;
+            var fix = new Fix(point.Latitude, point.Longitude, coordinate.Accuracy, coordinate.PositionSource);
+            lock (Lock) _last = (DateTime.UtcNow, fix);
+            return fix;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
         catch { return null; }

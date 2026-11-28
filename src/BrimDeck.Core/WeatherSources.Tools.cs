@@ -4,7 +4,7 @@ using BrimDeck.Core;
 
 namespace BrimDeck.Core;
 
-// 国内/国外判断与统一的城市名拆分。
+// 国内/国外判断、城市名拆分与坐标系换算。
 public static class Geo
 {
     public static bool IsChina(City city) => city.CountryCode is { Length: > 0 } country
@@ -15,6 +15,78 @@ public static class Geo
     // 中国统一 UTC+8；其他地区按经度估算，仅用于本地日升日落推算的兜底。
     // 中国城市没有 TimeZoneId 时也必须给 +8：按经度算，喀什（87.6°E）会得到 +6，跨日/逐时整点会偏两小时。
     public static double UtcOffsetHours(City city, DateTimeOffset? at = null) => city.TimeZoneId is { Length: > 0 } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone) ? zone.GetUtcOffset(at ?? DateTimeOffset.UtcNow).TotalHours : IsChina(city) ? 8 : (int)Math.Round(city.Longitude / 15.0);
+
+    // ---- 坐标系：程序内只存一套真实坐标（WGS-84）。和风官方词汇表要求中国大陆用 GCJ-02，
+    // 换算只发生在和风的请求边界上；GeoAPI 返回的大陆坐标入库前还原成 WGS-84。
+    private const double GcjA = 6378245.0;
+    private const double GcjEe = 0.00669342162296594323;
+
+    // 大陆范围外包框（与主流开源实现一致）。台湾、香港、澳门按官方要求用 WGS-84，单独排除；
+    // 深港边界只有一条河，该带按不加密处理：偏几百米不跨区，把香港坐标当大陆加密才会错位。
+    public static bool InMainland(double lat, double lon)
+        => lon is > 72.004 and < 137.8347 && lat is > 0.8293 and < 55.8271
+           && !Box(lat, lon, 21.80, 119.30, 25.40, 122.10)   // 台湾
+           && !Box(lat, lon, 22.15, 113.83, 22.56, 114.44)   // 香港
+           && !Box(lat, lon, 22.10, 113.52, 22.22, 113.61);  // 澳门
+
+    // WGS-84 → GCJ-02（加密，有明确公式）。境外原样返回。
+    public static (double Lat, double Lon) ToGcj02(double lat, double lon)
+    {
+        if (!InMainland(lat, lon)) return (lat, lon);
+        double dLat = OffsetLat(lon - 105.0, lat - 35.0), dLon = OffsetLon(lon - 105.0, lat - 35.0);
+        double radLat = lat / 180.0 * Math.PI;
+        double magic = Math.Sin(radLat);
+        magic = 1 - GcjEe * magic * magic;
+        double sqrtMagic = Math.Sqrt(magic);
+        dLat = dLat * 180.0 / (GcjA * (1 - GcjEe) / (magic * sqrtMagic) * Math.PI);
+        dLon = dLon * 180.0 / (GcjA / sqrtMagic * Math.Cos(radLat) * Math.PI);
+        return (lat + dLat, lon + dLon);
+    }
+
+    // GCJ-02 → WGS-84：迭代反解，5 轮后残差在厘米级，够用于城市尺度。
+    public static (double Lat, double Lon) ToWgs84(double lat, double lon)
+    {
+        if (!InMainland(lat, lon)) return (lat, lon);
+        double guessLat = lat, guessLon = lon;
+        for (int i = 0; i < 5; i++)
+        {
+            var (forwardLat, forwardLon) = ToGcj02(guessLat, guessLon);
+            guessLat += lat - forwardLat;
+            guessLon += lon - forwardLon;
+        }
+        return (guessLat, guessLon);
+    }
+
+    // 球面距离（km），用于判断「IP 城市名和系统坐标是不是同一个地方」这类粗判定。
+    public static double DistanceKm(double lat1, double lon1, double lat2, double lon2)
+    {
+        const double radius = 6371.0;
+        double dLat = (lat2 - lat1) * Math.PI / 180.0, dLon = (lon2 - lon1) * Math.PI / 180.0;
+        double a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2)
+                 + Math.Cos(lat1 * Math.PI / 180.0) * Math.Cos(lat2 * Math.PI / 180.0) * Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+        return radius * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+    }
+
+    private static bool Box(double lat, double lon, double south, double west, double north, double east)
+        => lat >= south && lat <= north && lon >= west && lon <= east;
+
+    private static double OffsetLat(double x, double y)
+    {
+        double value = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.Sqrt(Math.Abs(x));
+        value += (20.0 * Math.Sin(6.0 * x * Math.PI) + 20.0 * Math.Sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+        value += (20.0 * Math.Sin(y * Math.PI) + 40.0 * Math.Sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
+        value += (160.0 * Math.Sin(y / 12.0 * Math.PI) + 320 * Math.Sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
+        return value;
+    }
+
+    private static double OffsetLon(double x, double y)
+    {
+        double value = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.Sqrt(Math.Abs(x));
+        value += (20.0 * Math.Sin(6.0 * x * Math.PI) + 20.0 * Math.Sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+        value += (20.0 * Math.Sin(x * Math.PI) + 40.0 * Math.Sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
+        value += (150.0 * Math.Sin(x / 12.0 * Math.PI) + 300.0 * Math.Sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
+        return value;
+    }
 }
 
 // 城市时钟与日期轴定位：只有一套实现，数据层、设置页和视图都从这里取“今天”。

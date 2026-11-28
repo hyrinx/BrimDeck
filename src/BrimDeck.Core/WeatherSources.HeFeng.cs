@@ -19,8 +19,11 @@ public sealed class HeFengSource : IWeatherSource
     // 一次请求要用到的公共参数：坐标只保留两位小数（v1 只认这个精度）。
     private sealed record Context(string Host, string Key, City City, WeatherSettings Settings, int Generation)
     {
-        public string Lat => City.Latitude.ToString("0.00", CultureInfo.InvariantCulture);
-        public string Lon => City.Longitude.ToString("0.00", CultureInfo.InvariantCulture);
+        // 和风官方词汇表要求：中国大陆用 GCJ-02，其他地区用 WGS-84。City 里存的是真实坐标（WGS-84），
+        // 所有请求（含时光机的坐标反查）都从这里取坐标，加密只做一次。
+        private (double Lat, double Lon) Native => Geo.ToGcj02(City.Latitude, City.Longitude);
+        public string Lat => Native.Lat.ToString("0.00", CultureInfo.InvariantCulture);
+        public string Lon => Native.Lon.ToString("0.00", CultureInfo.InvariantCulture);
         public string Lang => Loc.IsEnglish ? "en" : "zh";
         public string Scope { get; } = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Host + "\n" + Key)));
         public string Site => $"{Lat},{Lon}|{Lang}";
