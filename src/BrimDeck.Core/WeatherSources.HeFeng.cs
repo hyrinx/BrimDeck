@@ -2,15 +2,15 @@ using System.Globalization;
 using System.Text.Json;
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
 // 和风天气：需要用户自己的 Key/Host。v1 覆盖实况、逐时、每日（含日月与晨昏蒙影）与空气；
 // v7 补充分钟降水、官方预警与生活指数；时光机补过去 10 天。选定它时只读它的返回，缺项显示 "-"。
-internal sealed class HeFengSource : IWeatherSource
+public sealed class HeFengSource : IWeatherSource
 {
-    internal const string Id = "hefeng";
+    public const string Id = "hefeng";
     // 地名搜索走独立闸门：天气通道限流时仍可搜新城市；额度在 RequestGate 里单独配置。
-    internal const string GeoId = "hefenggeo";
+    public const string GeoId = "hefenggeo";
     public WeatherSourceInfo Info { get; } = new(Id, Loc.T("和风天气", "QWeather"),
         // 官方「天气和基础服务」每月前 5 万次免费（个人用量等于免费）；台风/辐照/海洋等付费或无坐标接口的能力不接入。
         [WeatherDomain.Current, WeatherDomain.Hourly, WeatherDomain.Daily, WeatherDomain.Air, WeatherDomain.History, WeatherDomain.Minutely, WeatherDomain.Warning, WeatherDomain.Indices]);
@@ -30,7 +30,7 @@ internal sealed class HeFengSource : IWeatherSource
 
     // Key 随请求头明文传输，一律强制 HTTPS：用户填 http:// 也升级，避免 Key 在明文连接里裸奔。
     // 自动请求与手动探针共用同一套归一化，不能各写一遍导致行为不一致。
-    internal static string NormalizeHost(string raw)
+    public static string NormalizeHost(string raw)
     {
         string host = raw.Trim().TrimEnd('/');
         return host.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ? "https://" + host[7..]
@@ -38,7 +38,7 @@ internal sealed class HeFengSource : IWeatherSource
     }
 
     // 手动测试：复用实况请求那条链路（含判定与状态发布），只是坐标固定北京、绕过缓存。
-    internal static async Task<HeFengCheck> ProbeAsync(WeatherSettings settings, CancellationToken token)
+    public static async Task<HeFengCheck> ProbeAsync(WeatherSettings settings, CancellationToken token)
     {
         // 先判空再归一化：NormalizeHost("") 会得到 "https://"，拿它当有效 Host 会白发一个必失败的请求。
         string rawHost = settings.HeFengHost.Trim(), key = WeatherSecrets.Key;
@@ -668,5 +668,194 @@ internal sealed class HeFengSource : IWeatherSource
             return result.Count > 0 ? result : null;
         }
         catch { return null; }
+    }
+}
+
+
+// 和风日预报的国内补充通道：只在和风已选、城市在中国、且未来 14 天核心字段有缺口时补数据。
+// 它不是可独立选择的来源，不进 WeatherSources.All；适用条件与缺口判断都收在这里，聚合器不认识具体来源字符串。
+public static class ChinaDailySupplement
+{
+    public const string Id = "weathercomcn";
+    public static string Name => Loc.T("中国天气网", "China Weather");
+
+    // 聚合器只问「这个通道适用吗」，不用写死来源 ID 和地域规则。
+    public static bool Applies(string sourceId, City city) => sourceId == HeFengSource.Id && Geo.IsChina(city);
+
+    // 核心字段齐全就不补；缺一天就整批拉取，沿用原来的补缺边界。
+    public static bool Missing(IReadOnlyCollection<DayPoint>? days, DateTime today)
+    {
+        if (days is null) return true;
+        return !Enumerable.Range(0, 14).All(offset =>
+            days.Any(day => day.Date == WeatherClock.DateKey(today.AddDays(offset)) &&
+                day.HighC.HasValue && day.LowC.HasValue && day.Code.HasValue && day.NightCode.HasValue &&
+                day.PrecipMm.HasValue && day.WindDir is not null && day.WindMaxKmh.HasValue));
+    }
+
+    public static async Task<List<DayPoint>> FetchAsync(City city, DateTime today, CancellationToken token)
+    {
+        var (name, province) = Geo.Parts(city);
+        if (province.Length == 0 && TrimRegion(name) is "北京" or "上海" or "天津" or "重庆") province = name;
+        // 和风城市 id 与中国天气网代码同源：结构化 id（如洪山区 101200113）直接定位到区县站，
+        // 免去按城市名搜索一次；没有 id 时退回原路径按城市名解析。
+        string? id = city.LocationId is { Length: >= 9 } code && code.StartsWith("101") && code.All(char.IsDigit)
+            ? code
+            : await ResolveIdAsync(name, province, token);
+        if (id is null) return [];
+        var months = new List<Task<string?>>();
+        var start = today;
+        var end = today.AddDays(13);
+        for (var month = new DateTime(start.Year, start.Month, 1); month <= end; month = month.AddMonths(1))
+        {
+            string stamp = WeatherClock.MonthKey(month);
+            months.Add(Body($"{id}|{stamp}", TimeSpan.FromHours(6), $"https://d1.weather.com.cn/calendar_new/{stamp[..4]}/{id}_{stamp}.html", token, 6));
+        }
+        var bodies = await Task.WhenAll(months);
+        var days = new Dictionary<string, DayPoint>();
+        foreach (var body in bodies)
+        {
+            if (body is null || ExtractArray(body) is not { } json) continue;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                foreach (var item in doc.RootElement.EnumerateArray())
+                {
+                    string? raw = Json.Text(item, "date"); if (raw is null || raw.Length != 8) continue;
+                    string date = $"{raw[..4]}-{raw[4..6]}-{raw[6..]}";
+                    var category = Json.Text(item, "cla")?.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (!DateTime.TryParseExact(raw, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var dateValue)
+                        || dateValue < start || dateValue > end || category?.Any(tag => tag is "obs" or "history") == true) continue;
+                    string? condition = Json.Text(item, "w1");
+                    double? high = Json.Number(item, "max");
+                    double? low = Json.Number(item, "min");
+                    double? rain = Json.Number(item, "rain1");
+                    string? windRaw = Json.Text(item, "wd1");
+                    string? windPower = Json.Text(item, "ws1");
+                    if (!days.TryGetValue(date, out var day)) days[date] = day = new DayPoint { Date = date };
+                    day.HighC ??= high;
+                    day.LowC ??= low;
+                    // w1/wd1 都是「白天转夜间」合成串：拆开后分别落到白天与夜间字段，供逐日双图标和底部风行使用。
+                    string[] weatherParts = string.IsNullOrWhiteSpace(condition) ? [] : condition.Split('转', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (weatherParts.Length > 0 && day.Condition is null) { day.Condition = weatherParts[0]; day.Code = WeatherCodes.FromText(weatherParts[0]); }
+                    if (weatherParts.Length > 1 && day.NightCondition is null) { day.NightCondition = weatherParts[1]; day.NightCode = WeatherCodes.FromText(weatherParts[1]); }
+                    if (Json.Text(item, "w2") is { Length: > 0 } night && !string.IsNullOrWhiteSpace(night))
+                    {
+                        day.NightCondition ??= night;
+                        day.NightCode ??= WeatherCodes.FromText(night);
+                    }
+                    if (rain is not null) day.PrecipMm ??= rain;
+                    string[] windParts = string.IsNullOrWhiteSpace(windRaw) ? [] : windRaw.Split('转', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (windParts.Length > 0 && day.WindDir is null)
+                    {
+                        day.WindDir = windParts[0];
+                        day.WindDirDeg = WeatherCodes.DegreesFromText(windParts[0]);
+                    }
+                    // 风级可能在 ws1 而不在风向串里：没有 wd1 时也必须把风速补上。
+                    day.WindMaxKmh ??= WindPowerKmh(windParts.Length > 0 ? windParts[0] : null, windPower);
+                    if (windParts.Length > 1 && day.NightWindDir is null)
+                    {
+                        day.NightWindDir = windParts[1];
+                        day.NightWindDirDeg = WeatherCodes.DegreesFromText(windParts[1]);
+                        day.NightWindMaxKmh = WindPowerKmh(windParts[1], null);
+                    }
+                }
+            }
+            catch { }
+        }
+        return [.. days.Values];
+    }
+
+    private static double? WindPowerKmh(string? text, string? fallback)
+    {
+        foreach (var part in new[] { text, fallback })
+        {
+            if (string.IsNullOrWhiteSpace(part)) continue;
+            if (part.Contains("微风")) return 0;
+            if (WeatherCodes.FromWindPower(part) is { } kmh) return kmh;
+        }
+        return null;
+    }
+
+    private static async Task<string?> ResolveIdAsync(string name, string province, CancellationToken token)
+    {
+        // 城市 ID 是静态数据，落盘 30 天；同名城市按省份分开，避免「朝阳」串到别的省。
+        return await WeatherCache.GetAsync<string>(Id, "id|" + province + "|" + name, TimeSpan.FromDays(30), async ct =>
+        {
+            var result = await WeatherHttp.GetAsync(Id, $"https://toy1.weather.com.cn/search?cityname={Json.Esc(name)}", ct,
+                request => request.Headers.Referrer = new Uri("https://www.weather.com.cn/"), 3);
+            if (result.Body is null) return null;
+            string json = result.Body.Trim().TrimStart('(').TrimEnd(')');
+            if (ExtractArray(json) is not { } array) return null;
+            using var doc = JsonDocument.Parse(array);
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                string? reference = Json.Text(item, "ref");
+                string? found = reference?.Split('~')[0];
+                if (found is { Length: >= 9 } && found.All(char.IsDigit) && found.StartsWith("101")
+                    && SameProvince(reference, province)) return found;
+            }
+            return null;
+        }, token);
+    }
+
+    // 和风城市 id 与中国天气网搜索结果同源，ref 形如「101271001~sichuan~泸州~…~四川」；
+    // 只接受与当前城市同省的站点，没有同省候选就按无结果处理，也不写 ID 缓存。
+    private static bool SameProvince(string? reference, string province)
+    {
+        if (reference is null || province.Length == 0) return false;
+        string expected = TrimRegion(province);
+        return expected.Length > 0 && reference.Split('~').Any(part => TrimRegion(part) == expected);
+    }
+
+    private static string TrimRegion(string text)
+    {
+        string value = text.Trim();
+        foreach (var suffix in new[] { "壮族自治区", "回族自治区", "维吾尔自治区", "特别行政区", "自治区", "省", "市" })
+            if (value.EndsWith(suffix, StringComparison.Ordinal)) return value[..^suffix.Length];
+        return value;
+    }
+
+    // 响应体落盘：国内站点不稳定，缓存同时也是断网时的兜底。
+    private static Task<string?> Body(string key, TimeSpan ttl, string url, CancellationToken token, int seconds)
+        => WeatherCache.GetAsync<string>(Id, key, ttl, async ct =>
+        {
+            var response = await WeatherHttp.GetAsync(Id, url, ct, request => request.Headers.Referrer = new Uri("https://www.weather.com.cn/"), seconds);
+            return string.IsNullOrWhiteSpace(response.Body) ? null : response.Body;
+        }, token);
+
+    private static string? ExtractArray(string body)
+    {
+        int start = body.IndexOf('['), end = body.LastIndexOf(']');
+        return start >= 0 && end > start ? body[start..(end + 1)] : null;
+    }
+
+}
+
+
+// 和风日预报的国外补充通道：和风只给 10 天，日期轴画到未来 13 天，后几天会空。
+// 国外城市没法用中国天气网，改用 Open-Meteo 的 daily；只取 Daily 域，与直接选
+// Open-Meteo 时共用同一份 forecast 缓存，不额外增加请求种类。
+public static class OpenMeteoDailySupplement
+{
+    public const string Name = "Open-Meteo";
+
+    public static bool Applies(string sourceId, City city) => sourceId == HeFengSource.Id && !Geo.IsChina(city);
+
+    // 只认核心日级字段：Open-Meteo 不给中文天气名和夜间分段，拿这些当缺口条件会永远判缺。
+    public static bool Missing(IReadOnlyCollection<DayPoint>? days, DateTime today)
+    {
+        if (days is null) return true;
+        return !Enumerable.Range(0, 14).All(offset =>
+            days.Any(day => day.Date == WeatherClock.DateKey(today.AddDays(offset)) &&
+                day.HighC.HasValue && day.LowC.HasValue && day.Code.HasValue));
+    }
+
+    public static async Task<List<DayPoint>> FetchAsync(City city, WeatherSettings settings, DateTime today, CancellationToken token)
+    {
+        var part = await new OpenMeteoSource().FetchAsync(city, settings, [WeatherDomain.Daily], token);
+        if (part?.Days is not { Count: > 0 }) return [];
+        // 过去十天归 History 域，不能被日预报补充通道改写；只留今天起 14 天。
+        string start = WeatherClock.DateKey(today), end = WeatherClock.DateKey(today.AddDays(13));
+        return [.. part.Days.Where(day => string.CompareOrdinal(day.Date, start) >= 0 && string.CompareOrdinal(day.Date, end) <= 0)];
     }
 }

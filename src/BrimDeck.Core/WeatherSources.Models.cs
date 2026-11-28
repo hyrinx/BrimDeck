@@ -1,9 +1,9 @@
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
 // 分钟降水：时间戳是区间起点；和风 5 分钟、Open-Meteo 15 分钟，由来源写入实际跨度。
-internal sealed class MinutePoint
+public sealed class MinutePoint
 {
     public string Time { get; set; } = "";
     public double? Precip { get; set; }
@@ -11,7 +11,7 @@ internal sealed class MinutePoint
 }
 
 // 气象预警：一条预警的标题、正文、等级与类型
-internal sealed class WarningItem
+public sealed class WarningItem
 {
     public string Title { get; set; } = "";
     public string Text { get; set; } = "";
@@ -22,7 +22,7 @@ internal sealed class WarningItem
 }
 
 // 生活指数：和风的 type ID、名称、等级、类别与说明
-internal sealed class IndexItem
+public sealed class IndexItem
 {
     public string Type { get; set; } = "";   // 和风指数 type ID，语言无关；用于排序与等级着色
     public string Name { get; set; } = "";
@@ -32,9 +32,9 @@ internal sealed class IndexItem
 }
 
 // 当前实况：所有字段可空，来源只填自己知道的字段。用字段而不是属性，合并时可以 ref 写入。
-internal sealed class CurrentPart
+public sealed class CurrentPart
 {
-    internal CurrentPart Copy() => (CurrentPart)MemberwiseClone();
+    public CurrentPart Copy() => (CurrentPart)MemberwiseClone();
     public DateTimeOffset? ObservedAt;
     public double? Temperature;
     public double? FeelsLike;
@@ -60,7 +60,7 @@ internal sealed class CurrentPart
 
 // 空气质量：AQI、首要污染物、健康建议与全部污染物浓度。
 // Pollutants 用污染物代码（pm2p5、o3…）作键，只存原始数值；名称、单位与排版由视图决定。
-internal sealed class AirPart
+public sealed class AirPart
 {
     public int? Aqi { get; set; }
     // 通用国际标准的 AQI（和风 qaqi）：国内来源同时返回中国标准（cn-mee）时并列展示。
@@ -82,7 +82,7 @@ internal sealed class AirPart
 }
 
 // 一个小时的观测/预报，时间统一为 yyyy-MM-ddTHH:mm。
-internal sealed class HourPoint
+public sealed class HourPoint
 {
     public bool HasData() => Temperature.HasValue || FeelsLike.HasValue || Humidity.HasValue || Code.HasValue
         || RainProb.HasValue || PrecipMm.HasValue || WindKmh.HasValue || WindGustKmh.HasValue || WindDirDeg.HasValue
@@ -107,7 +107,7 @@ internal sealed class HourPoint
 }
 
 // 一天的预报/历史，日期统一为 yyyy-MM-dd。用字段而不是属性，合并时可以 ref 写入。
-internal sealed class DayPoint
+public sealed class DayPoint
 {
     public string Date = "";
     public int? Code;
@@ -152,7 +152,7 @@ internal sealed class DayPoint
 }
 
 // 一个来源一次请求能拿到的全部数据；聚合器按域挑选。
-internal sealed class WeatherPart
+public sealed class WeatherPart
 {
     public CurrentPart? Current { get; set; }
     public AirPart? Air { get; set; }
@@ -172,7 +172,7 @@ internal sealed class WeatherPart
 // 契约：快照直接持有来源层的结构化对象（CurrentPart / AirPart / HourPoint[] / DayPoint[] / MinutePoint[]）。
 // 来源没给的字段是 null（数值/整数）或空串（文字），视图出口统一转成 --。没有 NaN/-1 哨兵、没有平行数组对齐、
 // 没有「结构化 → 拍平 → 视图按下标还原」的转换层——新增字段只需在来源模型加一处。
-internal sealed class WeatherSnapshot
+public sealed class WeatherSnapshot
 {
     // Name 是城市的完整层级（洪山区 · 武汉市 · 湖北省 · 中国），与 City.Name 同源，自动定位城市名与设置页都用它。
     public string Name {get;set;}=""; public DateTimeOffset FetchedAt {get;set;} public string Today {get;set;}="";
@@ -231,5 +231,5 @@ internal sealed class WeatherSnapshot
     public string AirAdviceSensitive => Air?.HealthSensitive ?? "";
 
     // 只需替换扩展域时的浅拷贝：数组按引用共享，调用方只改写自己替换的属性。
-    internal WeatherSnapshot ShallowCopy() => (WeatherSnapshot)MemberwiseClone();
+    public WeatherSnapshot ShallowCopy() => (WeatherSnapshot)MemberwiseClone();
 }

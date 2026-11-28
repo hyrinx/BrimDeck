@@ -1,16 +1,16 @@
 using System.Text.Json;
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
 // 和风可用性监测：只认「实况」这一条真实请求的结果。缓存命中、闸门拦截、请求级 400 都不算，
 // 避免把国外坐标必失败的分钟降水、或另一座城市的并发请求误判成来源不可用。
 // 分类依赖和风的 HTTP 语义，所以和来源实现放同一层；只把文件独立出来，不让来源反向依赖设置页。
-internal enum HeFengState { Untested, Connected, Failed, NotSent }
+public enum HeFengState { Untested, Connected, Failed, NotSent }
 
-internal sealed record HeFengCheck(HeFengState State, string Detail, TimeSpan Elapsed);
+public sealed record HeFengCheck(HeFengState State, string Detail, TimeSpan Elapsed);
 
-internal static class HeFengMonitor
+public static class HeFengMonitor
 {
     private static readonly object Sync = new();
     private static HeFengCheck _current = new(HeFengState.Untested,
@@ -35,7 +35,7 @@ internal static class HeFengMonitor
     }
 
     // 由实况请求在收到 HTTP 结果后直接回报，generation 与发起时一致才写入。
-    internal static void Report(int generation, int status, string? body, TimeSpan elapsed)
+    public static void Report(int generation, int status, string? body, TimeSpan elapsed)
     {
         var (state, detail) = Classify(status, body);
         if (state is null) return;   // 闸门未放行 / 请求级错误：不判来源可用性
@@ -50,7 +50,7 @@ internal static class HeFengMonitor
 
     public static int Generation { get { lock (Sync) return _generation; } }
 
-    internal static (HeFengState? State, string? Detail) Classify(int status, string? body)
+    public static (HeFengState? State, string? Detail) Classify(int status, string? body)
     {
         if (status == 0) return (null, null);   // 请求闸门拦下，没有真实发出
         if (status is 401 or 403) return (HeFengState.Failed, Loc.T("API Key 无效或无权限", "API Key invalid or unauthorized"));

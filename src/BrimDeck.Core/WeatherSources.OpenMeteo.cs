@@ -2,9 +2,9 @@ using System.Globalization;
 using System.Text.Json;
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
-internal sealed class OpenMeteoSource : IWeatherSource
+public sealed class OpenMeteoSource : IWeatherSource
 {
     public WeatherSourceInfo Info { get; } = new("openmeteo", "Open-Meteo",
         [WeatherDomain.Current, WeatherDomain.Hourly, WeatherDomain.Daily, WeatherDomain.Air, WeatherDomain.History, WeatherDomain.Minutely]);

@@ -5,8 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using BrimDeck.Core;
 namespace BrimDeck;
-// 数据层：天气取数入口、城市搜索、自动定位、快照落盘与逐时本地历史，不包含任何 WPF 控件或视图生命周期。
-// City 与 WeatherSettings 由于要存进 settings.json，定义在 BrimDeck.Core；本文件只把下载到的快照放在 weather/snapshot/。
+// 数据层：天气取数入口、城市搜索、自动定位、快照落盘与逐时本地历史
 internal static class WeatherData
 {
     internal sealed class State
@@ -159,10 +158,7 @@ internal static class WeatherData
     // 错误响应（HTTP 非 2xx 或 code != 200）直接当作空结果，调用方据此区分「没有这个城市」与请求失败。
     private static async Task<List<City>> SearchHeFeng(string query, WeatherSettings settings, CancellationToken token)
     {
-        string host = settings.HeFengHost.Trim().TrimEnd('/');
-        // 与天气请求同一策略：Key 走请求头，强制 HTTPS，绝不落明文。
-        host = host.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ? "https://" + host[7..]
-             : host.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ? host : "https://" + host;
+        string host = HeFengSource.NormalizeHost(settings.HeFengHost);
         string lang = Loc.IsEnglish ? "en" : "zh";
         string body = "";
         // 搜索用独立闸门通道：天气取数（尤其时光机一轮 10 次请求）触发 429/失败熔断时，
@@ -264,7 +260,7 @@ internal static class WeatherData
     }
     // 天气聚合入口：当前、24 小时、24 天（历史 10 + 今天 + 未来 13）、日升日落与空气质量由 WeatherAggregator 统一拼装。
     // 历史单独一轮，progress 让界面先画不含历史的版本，历史到了再用返回值整体替换。
-    internal static string CacheKey(City city, string sourceId) => city.StorageKey() + "|" + sourceId;
+    internal static string CacheKey(City city, string sourceId) => WeatherKeys.CacheKey(city, sourceId);
     internal static async Task<WeatherSnapshot> CurrentAsync(City city, WeatherSettings schedule, string sourceId, CancellationToken token, Action<WeatherSnapshot>? progress = null)
     {
         var snapshot = await WeatherAggregator.FetchAsync(city, schedule, sourceId, token, progress is null ? null : partial =>
@@ -296,66 +292,4 @@ internal static class WeatherData
     internal static bool HasWeather(WeatherSnapshot snapshot)
         => snapshot.Temperature is { } t && double.IsFinite(t) || snapshot.Sources.Keys.Any(domain =>
             domain is "Current" or "Hourly" or "Daily" or "Air" or "History" or "Minutely");
-}
-
-// 本地逐时历史：每次快照落盘时把其中的整点数据按「城市 + 整点」累积，供下一个窗口的过去小时使用。
-// 和风逐小时只有未来、时光机不含今天，过去的小时只能靠本机历史；本地没有就留空，绝不联网补。
-internal static class WeatherHourHistory
-{
-    // 保留最近 48 小时：足以覆盖「过去 10 小时」，也给隔天再打开留余量。
-    private const int KeepHours = 48;
-    private static string Root => Path.Combine(WeatherFiles.Root, "weather", "hour-history");
-    private static readonly JsonSerializerOptions Json = new()
-    {
-        IncludeFields = true,
-        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
-    private static readonly object Lock = new();
-    private sealed class FileFormat { public string Key { get; set; } = ""; public List<HourPoint> Hours { get; set; } = []; }
-
-    internal static Dictionary<string, HourPoint> Read(string key)
-    {
-        lock (Lock)
-        {
-            var result = new Dictionary<string, HourPoint>(StringComparer.Ordinal);
-            try
-            {
-                var path = Path.Combine(Root, WeatherFiles.Name(key, ".json"));
-                if (File.Exists(path) && JsonSerializer.Deserialize<FileFormat>(File.ReadAllText(path), Json) is { } entry && entry.Key == key)
-                    foreach (var hour in entry.Hours ?? [])
-                        if (!string.IsNullOrWhiteSpace(hour.Time)) result[hour.Time] = hour;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
-            return result;
-        }
-    }
-    // 把一份快照里的整点数据并入历史；以最新整点为基准保留最近 KeepHours 小时，写盘失败不影响刷新。
-    internal static void Record(string key, WeatherSnapshot snapshot)
-    {
-        if (string.IsNullOrWhiteSpace(key)) return;
-        lock (Lock)
-        {
-            var dict = Read(key);
-            // 快照直接持有 HourPoint，无需从哨兵数组还原；只挑有数据的整点入历史。
-            foreach (var hour in snapshot.Hours)
-            {
-                if (string.IsNullOrWhiteSpace(hour.Time) || !hour.HasData()) continue;
-                dict[hour.Time] = hour;
-            }
-            if (dict.Count == 0) return;
-            var newest = dict.Keys.Select(ParseTime).DefaultIfEmpty(DateTime.MinValue).Max();
-            string cutoff = newest.AddHours(-KeepHours).ToString("yyyy-MM-ddTHH:mm", System.Globalization.CultureInfo.InvariantCulture);
-            foreach (var old in dict.Keys.Where(t => string.CompareOrdinal(t, cutoff) < 0).ToList()) dict.Remove(old);
-            try
-            {
-                WeatherFiles.WriteAtomic(Path.Combine(Root, WeatherFiles.Name(key, ".json")),
-                    JsonSerializer.Serialize(new FileFormat { Key = key, Hours = [.. dict.Values.OrderBy(p => p.Time)] }, Json));
-            }
-            catch { }
-        }
-    }
-
-    private static DateTime ParseTime(string t)
-        => DateTime.TryParseExact(t, "yyyy-MM-ddTHH:mm", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var value) ? value : DateTime.MinValue;
 }

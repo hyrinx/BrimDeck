@@ -6,7 +6,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
 // 请求闸门、请求结果与统一 HTTP 入口；真正的缓存实现在 BrimDeck.Core/WeatherCache.cs。
 // 本文件只关心「能不能发、怎么发、结果如何」，不负责数据缓存与快照落盘。
@@ -14,7 +14,7 @@ namespace BrimDeck;
 // 请求闸门：退避 + 每日预算。
 // 和风文档明确「不要在被限流时硬重试，会被判定为攻击并冻结账号」，因此 401/402/403 直接停 30 分钟，
 // 429 指数退避，网络失败短退避；成功即清零。预算只是防跑飞的安全网，正常用量远达不到。
-internal static class RequestGate
+public static class RequestGate
 {
     private sealed class State
     {
@@ -113,12 +113,6 @@ internal static class RequestGate
         lock (Sync) return state.Day == DateOnly.FromDateTime(DateTime.Now) ? state.Count : 0;
     }
 
-    public static TimeSpan Cooldown(string source)
-    {
-        if (!States.TryGetValue(source, out var state)) return TimeSpan.Zero;
-        lock (Sync) { var left = state.Until - DateTimeOffset.Now; return left > TimeSpan.Zero ? left : TimeSpan.Zero; }
-    }
-
     private static readonly JsonSerializerOptions Json = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private sealed record Usage(DateOnly Day, int Count, int MonthCount);
@@ -210,10 +204,10 @@ internal static class RequestGate
 }
 
 // 一次请求的结果：Body 为空时 Status 说明原因（0 = 被闸门拦下；非 2xx 时为 HTTP 状态码；408 = 超时；-1 = 网络异常）。
-internal readonly record struct HttpResult(string? Body, int Status);
+public readonly record struct HttpResult(string? Body, int Status);
 
 // 统一的网络入口：显式解压、固定 UA、超时、闸门与计数都在这里，来源只关心 URL 和解析。
-internal static class WeatherHttp
+public static class WeatherHttp
 {
     private static readonly HttpClient Client = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All }) { Timeout = TimeSpan.FromSeconds(20) };
     // 带和风 Key 的请求专用：禁用自动重定向，改由 SendAsync 手动跟随。

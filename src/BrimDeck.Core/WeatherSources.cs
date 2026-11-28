@@ -1,19 +1,19 @@
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
 // 来源注册表与能力接口。实现按主题拆分在同目录：
 //   WeatherSources.Models.cs     传输模型（来源与聚合层的数据契约）
 //   WeatherSources.Aggregator.cs 按域取数并合并成 WeatherSnapshot
 //   WeatherSources.OpenMeteo.cs / WeatherSources.HeFeng.cs   可选来源实现
-//   WeatherDailySupplement.ComCn.cs / .OpenMeteo.cs          和风日预报的国内/国外补充通道（非可选来源）
+//   和风日预报的国内/国外补充通道写在 HeFeng.cs 尾部（非可选来源，不进 WeatherSources.All）
 //   HeFengMonitor.cs                                         和风实况连通性状态
 //   WeatherSources.Tools.cs                                  Geo / WeatherCodes / WeatherClock / Json 工具
 // WeatherDomain 与 WeatherSettings 定义在 BrimDeck.Core：它们是 settings.json 的一部分。
 
-internal sealed record WeatherSourceInfo(string Id, string Name, WeatherDomain[] Domains);
+public sealed record WeatherSourceInfo(string Id, string Name, WeatherDomain[] Domains);
 
-internal interface IWeatherSource
+public interface IWeatherSource
 {
     WeatherSourceInfo Info { get; }
     bool CanServe(City city, WeatherSettings settings);
@@ -22,7 +22,7 @@ internal interface IWeatherSource
 }
 
 // 来源集合与查询入口。
-internal static class WeatherSources
+public static class WeatherSources
 {
     public static readonly IWeatherSource[] All =
     [

@@ -2,12 +2,12 @@ using System.Globalization;
 using System.Text.Json;
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
 // 单源聚合：每个域只请求用户选定的那一家；同一次刷新把多个域合并成尽量少的请求。
 // 指定来源缺的字段就留空，不跨源补缺；唯一的例外是和风日预报：国内由中国天气网、
 // 国外由 Open-Meteo 的补充通道补齐日期轴缺口。
-internal static class WeatherAggregator
+public static class WeatherAggregator
 {
     private static readonly TimeSpan SourceTimeout = TimeSpan.FromSeconds(15);
     // 时光机 10 次请求分批执行，耗时远超其它域：单独计时，不与预警/指数共用 15 秒预算。
@@ -235,7 +235,7 @@ internal static class WeatherAggregator
                 names.Add(supplement.Name);
             }
         }
-        var cityKey = WeatherData.CacheKey(city, sourceId);
+        var cityKey = WeatherKeys.CacheKey(city, sourceId);
         var local = WeatherHourHistory.Read(cityKey);
         foreach (var (time, point) in local)
             if (!hours.ContainsKey(time)) hours[time] = point;

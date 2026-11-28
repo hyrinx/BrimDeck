@@ -45,7 +45,7 @@ public sealed partial class SettingsWindow
             if(levels.Length<2) return full;
             string first=levels[0],second=levels[1];
             bool province=second.EndsWith("省")||second.Contains("自治区")||second.EndsWith("特别行政区")||second.EndsWith("地区");
-            bool bare=!first.EndsWith("市")&&!first.EndsWith("省")&&!first.EndsWith("区")&&!first.EndsWith("县")&&!first.EndsWith("旗")&&!first.EndsWith("盟");
+            bool bare=!first.EndsWith("市")&&!first.EndsWith("省")&&!first.EndsWith("区")&&!first.EndsWith("县")&&!first.EndsWith("旗")&&!first.EndsWith("盟")&&!first.EndsWith("州")&&!first.EndsWith("地区");
             if(province&&bare&&first is not ("香港" or "澳门" or "北京" or "上海" or "天津" or "重庆"))levels[0]=first+"市";
             return string.Join(City.Separator,levels);
         }

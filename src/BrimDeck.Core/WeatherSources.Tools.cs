@@ -2,10 +2,10 @@ using System.Globalization;
 using System.Text.Json;
 using BrimDeck.Core;
 
-namespace BrimDeck;
+namespace BrimDeck.Core;
 
 // 国内/国外判断与统一的城市名拆分。
-internal static class Geo
+public static class Geo
 {
     public static bool IsChina(City city) => city.CountryCode is { Length: > 0 } country
         ? country.Equals("CN", StringComparison.OrdinalIgnoreCase)
@@ -17,14 +17,14 @@ internal static class Geo
 }
 
 // 城市时钟与日期轴定位：只有一套实现，数据层、设置页和视图都从这里取“今天”。
-internal static class WeatherClock
+public static class WeatherClock
 {
     // 公历日期键：来源返回的日期都是 yyyy-MM-dd，键不能跟随线程的区域性（佛历会把 2026 写成 2569）。
-    internal static string DateKey(DateTime date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-    internal static string MonthKey(DateTime date) => date.ToString("yyyyMM", CultureInfo.InvariantCulture);
+    public static string DateKey(DateTime date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    public static string MonthKey(DateTime date) => date.ToString("yyyyMM", CultureInfo.InvariantCulture);
 
     // 城市当地此刻；优先按快照保存的 IANA 时区解析（夏令时随之切换），拿不到时区才退回按经度估算的固定偏移。
-    internal static DateTimeOffset Now(WeatherSnapshot s)
+    public static DateTimeOffset Now(WeatherSnapshot s)
     {
         if (!string.IsNullOrWhiteSpace(s.TimeZoneId)
             && TimeZoneInfo.TryFindSystemTimeZoneById(s.TimeZoneId, out var zone))
@@ -38,7 +38,7 @@ internal static class WeatherClock
 
     // 分钟降水的时间戳 → 绝对时刻。和风 fxTime 自带 +08:00；Open-Meteo time 是城市当地时间、不带偏移，
     // 后者必须按城市偏移解释，否则 DateTimeOffset.TryParse 会用本机时区，跨时区查城市时倒计时会错几个小时。
-    internal static DateTimeOffset? MinuteAt(WeatherSnapshot s, string text)
+    public static DateTimeOffset? MinuteAt(WeatherSnapshot s, string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;
         bool explicitOffset = text.EndsWith('Z') || (text.Length >= 6 && text[^6] is '+' or '-' && text[^3] == ':');
@@ -49,14 +49,14 @@ internal static class WeatherClock
     }
 
     // 快照抓取时写下的今天在正序日期轴上的位置；找不到回退 0。用于选窗口这类不关心跨日的场景。
-    internal static int SnapshotIndex(WeatherSnapshot s)
+    public static int SnapshotIndex(WeatherSnapshot s)
     {
         for (int i = 0; i < s.Days.Length; i++) if (s.Days[i].Date.StartsWith(s.Today, StringComparison.Ordinal)) return i;
         return 0;
     }
 
     // 城市当前日期在日期轴上的位置；缓存跨日对不上时返回 -1，让视图把日期轴标成过期。
-    internal static int LiveIndex(WeatherSnapshot s)
+    public static int LiveIndex(WeatherSnapshot s)
     {
         string today = DateKey(Now(s).DateTime);
         for (int i = 0; i < s.Days.Length; i++) if (s.Days[i].Date.StartsWith(today, StringComparison.Ordinal)) return i;
@@ -65,7 +65,7 @@ internal static class WeatherClock
 }
 
 // 各来源的天气代码统一成 Open-Meteo 使用的 WMO code，界面图标与配色只认这一套。
-internal static class WeatherCodes
+public static class WeatherCodes
 {
     // 中文天气文本（中国天气网）→ WMO。取“转”之前的第一种天气作为当日主天气。
     public static int FromText(string? text)
@@ -152,14 +152,6 @@ internal static class WeatherCodes
         return names[((int)angle / 45) % 8];
     }
 
-    public static string Text(int code) => code switch
-    {
-        0 => Loc.T("晴", "Clear"), 1 or 2 => Loc.T("多云", "Cloudy"), 3 => Loc.T("阴", "Overcast"),
-        45 or 48 => Loc.T("雾", "Fog"), >= 51 and <= 67 => Loc.T("雨", "Rain"), >= 71 and <= 77 => Loc.T("雪", "Snow"),
-        >= 80 and <= 82 => Loc.T("阵雨", "Showers"), 85 or 86 => Loc.T("阵雪", "Snow showers"), >= 95 => Loc.T("雷雨", "Thunderstorm"),
-        _ => Loc.T("多云", "Cloudy")
-    };
-
     // AQI 国标 HJ 633 的唯一分档：0=无数据，1..6=优/良/轻度/中度/重度/严重。
     // 等级文字、逐时短标签与 Open-Meteo 的 Level 都按这一档取值，阈值只在这里写一遍；展示色在 WeatherVisuals。
     public static int AqiBand(int aqi) => aqi switch
@@ -211,7 +203,7 @@ internal static class WeatherCodes
 }
 
 // JSON 小工具：容忍 number/string 混用，缺失返回 null。
-internal static class Json
+public static class Json
 {
     public static JsonElement? Get(JsonElement root, string name) => root.ValueKind == JsonValueKind.Object && root.TryGetProperty(name, out var value) ? value : null;
     public static string? Text(JsonElement root, string name) => Get(root, name) is { } value && value.ValueKind switch { JsonValueKind.String => true, JsonValueKind.Number => true, _ => false } ? value.ToString() : null;
