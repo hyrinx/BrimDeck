@@ -33,21 +33,11 @@ public sealed partial class SettingsWindow
                 grid.ColumnDefinitions.Add(new ColumnDefinition {Width=width==0 ? new GridLength(1,GridUnitType.Star) : new GridLength(width)});
             return grid;
         }
-        static (string Title, string? Detail) SplitName(string full)
+        // 城市行标题取第一级（区县或城市），副标题是接口返回的完整层级，名称原样展示。
+        static string TitleName(string full)
         {
             var levels=City.SplitLevels(full);
-            return levels.Length==0 ? (full,null) : (levels[0],levels.Length>1 ? string.Join(City.Separator,levels.Skip(1)) : null);
-        }
-        // 接口给的城市级名称常不带「市」（合肥·安徽省·中国）。只在显示层补后缀，不改动保存的完整名称。
-        static string DisplayCityName(string full)
-        {
-            var levels=City.SplitLevels(full);
-            if(levels.Length<2) return full;
-            string first=levels[0],second=levels[1];
-            bool province=second.EndsWith("省")||second.Contains("自治区")||second.EndsWith("特别行政区")||second.EndsWith("地区");
-            bool bare=!first.EndsWith("市")&&!first.EndsWith("省")&&!first.EndsWith("区")&&!first.EndsWith("县")&&!first.EndsWith("旗")&&!first.EndsWith("盟")&&!first.EndsWith("州")&&!first.EndsWith("地区");
-            if(province&&bare&&first is not ("香港" or "澳门" or "北京" or "上海" or "天津" or "重庆"))levels[0]=first+"市";
-            return string.Join(City.Separator,levels);
+            return levels.Length==0 ? full : levels[0];
         }
         void Fill()
         {
@@ -65,9 +55,9 @@ public sealed partial class SettingsWindow
                         temperature=snap.Temperature is { } t && double.IsFinite(t)?$"{t:0}°":"--";code=snap.WeatherCode??-1;day=snap.IsDay;
                         if(!snap.Name.Contains("当前位置"))local=snap.Name;
                     }
-                    if(local.Trim().Length>0&&!local.Contains("当前位置"))subtitle=DisplayCityName(local);
+                    if(local.Trim().Length>0&&!local.Contains("当前位置"))subtitle=local;
                 } else {
-                    var parts=SplitName(city.Name);name=parts.Title;subtitle=DisplayCityName(city.Name);
+                    name=TitleName(city.Name);subtitle=city.Name;
                     if(state.TrySnapshot(state.KeyFor(city),out var snap)){temperature=snap.Temperature is { } t && double.IsFinite(t)?$"{t:0}°":"--";code=snap.WeatherCode??-1;day=snap.IsDay;}
                 }
                 var grid=CityGrid();var sources=WeatherSources.All;
