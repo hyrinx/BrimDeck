@@ -362,7 +362,9 @@ public sealed class HeFengSource : IWeatherSource
             double offset = Geo.UtcOffsetHours(city);
             return new CurrentPart
             {
-                ObservedAt = DateTimeOffset.TryParse(Json.Text(root, "observationTime"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var observed) ? observed : null,
+                // v1 实况的观测时间是 validTime（官方响应示例里就是它，没有 observationTime/obsTime）。
+                // 和逐时/逐日一样走 Stamp：请求带 localTime=true 时带偏移原样用，万一返回 Z 也能折回城市时区。
+                ObservedAt = Stamp(Json.Text(root, "validTime"), city),
                 Temperature = TemperatureC(root, "temperature"),
                 FeelsLike = TemperatureC(root, "feelsLike"),
                 Humidity = PercentInt(root, "humidity"),
@@ -627,6 +629,9 @@ public sealed class HeFengSource : IWeatherSource
             var result = new List<WarningItem>();
             foreach (var item in list.EnumerateArray())
             {
+                // messageType.code=cancel 是「撤销」而不是一条新预警：官方文档写明它的有效期只有 1 小时。
+                // 视图只按 expireTime 过滤，不过滤就会把已撤销的预警继续当成生效预警画一小时。
+                if (Json.Get(item, "messageType") is { } message && Json.Text(message, "code") is "cancel") continue;
                 string type = Json.Text(item, "headline") ?? "";
                 if (Json.Get(item, "eventType") is { } evt) type = Json.Text(evt, "name") ?? type;
                 string level = Json.Text(item, "severity") ?? "";

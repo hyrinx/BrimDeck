@@ -176,10 +176,12 @@ internal sealed class WeatherGlyph : FrameworkElement
         {
             bool snow = code is >= 71 and <= 77 or 85 or 86;
             bool ice = code is 56 or 57 or 66 or 67;
+            // 雨夹雪画一颗雪花 + 两道雨，和纯雨、纯雪都能一眼区分。
+            bool mixed = code is 68 or 69;
             for (int i = 0; i < 3; i++)
             {
                 var center = new Point(23 + 16 * i, 62 + (i % 2) * 5 + wave * 2);
-                if (snow)
+                if (snow || (mixed && i == 0))
                 {
                     for (int j = 0; j < 3; j++)
                     {
@@ -282,7 +284,8 @@ internal static class WeatherVisuals
     internal static string Condition(int code) => code switch
     {
         0 => Loc.T("晴", "Sunny"), 1 or 2 => Loc.T("多云", "Cloudy"), 3 => Loc.T("阴", "Overcast"),
-        45 or 48 => Loc.T("雾", "Foggy"), >= 51 and <= 67 => Loc.T("雨", "Rain"), >= 71 and <= 77 => Loc.T("雪", "Snow"),
+        45 or 48 => Loc.T("雾", "Foggy"), 56 or 57 or 66 or 67 => Loc.T("冻雨", "Freezing rain"), >= 51 and <= 67 => Loc.T("雨", "Rain"),
+        68 or 69 => Loc.T("雨夹雪", "Sleet"), >= 71 and <= 77 => Loc.T("雪", "Snow"),
         >= 80 and <= 82 => Loc.T("阵雨", "Showers"), 85 or 86 => Loc.T("阵雪", "Snow showers"), >= 95 => Loc.T("雷雨", "Thunderstorm"), _ => Loc.T("多云", "Cloudy")
     };
     // AQI 国标 HJ 633 的展示色：等级仍由 WeatherCodes.AqiBand 判定，颜色只在这里映射成 WPF 画刷用的 Color。

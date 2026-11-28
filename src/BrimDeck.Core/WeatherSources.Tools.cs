@@ -13,7 +13,8 @@ public static class Geo
     // 城市级名称与省份：都从 City 唯一的完整名称里拆，区县城市取其所属地级市（国内源接口只认城市级）。
     public static (string City, string Province) Parts(City city) => City.GeoPartsOf(city.Name);
     // 中国统一 UTC+8；其他地区按经度估算，仅用于本地日升日落推算的兜底。
-    public static double UtcOffsetHours(City city, DateTimeOffset? at = null) => city.TimeZoneId is { Length: > 0 } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone) ? zone.GetUtcOffset(at ?? DateTimeOffset.UtcNow).TotalHours : (int)Math.Round(city.Longitude / 15.0);
+    // 中国城市没有 TimeZoneId 时也必须给 +8：按经度算，喀什（87.6°E）会得到 +6，跨日/逐时整点会偏两小时。
+    public static double UtcOffsetHours(City city, DateTimeOffset? at = null) => city.TimeZoneId is { Length: > 0 } id && TimeZoneInfo.TryFindSystemTimeZoneById(id, out var zone) ? zone.GetUtcOffset(at ?? DateTimeOffset.UtcNow).TotalHours : IsChina(city) ? 8 : (int)Math.Round(city.Longitude / 15.0);
 }
 
 // 城市时钟与日期轴定位：只有一套实现，数据层、设置页和视图都从这里取“今天”。
@@ -73,6 +74,8 @@ public static class WeatherCodes
         if (string.IsNullOrWhiteSpace(text)) return 3;
         string value = text.Split('转')[0].Trim();
         if (value.Contains("雷")) return 95;
+        // 雨夹雪/雨雪是混合降水，必须排在通用「雨」「雪」之前：否则先命中 Contains("雨") 变成普通雨。
+        if (value.Contains("雨夹雪") || value.Contains("雨雪")) return 68;
         if (value.Contains("暴雨")) return 65;
         if (value.Contains("大雨")) return 63;
         if (value.Contains("中雨")) return 63;
@@ -96,8 +99,10 @@ public static class WeatherCodes
         "100" => 0, "101" or "102" or "103" => 2, "104" => 3,
         "300" or "301" => 80, "302" => 95, "303" or "304" => 96, "305" or "309" => 61,
         "306" or "314" => 63, "307" or "315" => 65, "308" or "316" => 65, "310" or "317" => 65,
-        "311" or "312" or "318" => 65, "313" => 66, "404" or "405" or "406" => 77,
-        "399" => 61, "499" => 73, "400" or "408" => 71, "401" or "409" => 73, "402" or "410" or "403" => 75, "407" => 85,
+        "311" or "312" or "318" => 65, "313" => 66,
+        "399" => 61, "499" => 73, "400" or "408" => 71, "401" or "409" => 73, "402" or "410" or "403" => 75,
+        // 404 雨夹雪 / 405 雨雪 / 406 阵雨夹雪是雨雪混合：并进 77（米雪）或 71（雪）都会把雨雪天气画成纯雪。
+        "404" or "405" or "406" => 68, "407" => 85,
         "500" or "501" or "509" or "510" or "514" or "515" => 45,
         "502" or "511" or "512" or "513" => 45, "503" or "504" or "507" or "508" => 45,
         "900" => 0, "901" => 0, "999" => 3, _ => 3
